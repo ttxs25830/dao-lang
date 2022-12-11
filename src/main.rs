@@ -1,19 +1,5 @@
-use std::env;
+//! DaoLang，一门解释型，动态类型，弱类型的编程语言，献给我们的老师。
 
-mod ats;
-
-fn get_path() -> String {
-    env::args()
-        .collect::<Vec<String>>()
-        .get(1)
-        .unwrap_or(&String::from(""))
-        .to_owned()
-}
-fn main() {
-    let path = get_path();
-    if path != "" {
-        // 读取文件
-    } else {
-        // 进入交互模式
-    }
-}
+mod runtime;
+use runtime::Token;
+fn main() {}
