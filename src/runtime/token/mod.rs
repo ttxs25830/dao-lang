@@ -1,136 +1,257 @@
 //! 词法分析器：将源代码字符串转化为一系列程序可以理解的Token，以便进一步处理
 
-use lazy_static::lazy_static;
-use regex::Regex;
-
 // 引入`Token`类型
 mod tokens;
+use std::str::Chars;
+
 pub use tokens::Token;
 use tokens::*;
 
-use super::errors::SyntaxError;
+use super::SyntaxError;
 
-impl Token {
-    /// 将一串源代码解析为`Vec<Token>`
-    /// # 错误
-    /// 如源代码不合法，则返回`SyntaxError`
-    pub fn from(code: &String) -> Result<Vec<Token>, SyntaxError> {
-        // 生成&编译正则表达式
-        lazy_static! {
-            // 匹配各类Token的正则表达式
-            static ref RE_LIST: Vec<(&'static str, &'static str)> = vec![
-                (LITERAL_VALUES_STRING_NAME, "\"([^\"])*\""),
-                (LITERAL_VALUES_NUMBER_NAME, r"\d+(\.\d+)?"),
-                (KEYWORDS_NAME, r"let"),
-                (ID_NAME, r"[a-z_A-Z][a-z_A-Z0-9]*"),
-                (END_NAME, r";"),
-                (EMPTY_NAME, r"( +)|(//.*)"),
-                (
-                    COMMON_OPS_NAME,
-                    r"[+\-*/%]|!|&&|\|\||<=|==|>=|[<>\(\)\[\]]|,"
-                ),
-                (ASSIGN_OPS_NAME, r"=")
-            ];
-            static ref RE: Regex = {
-                let re_str =
-                    String::from_iter(RE_LIST.iter().map(|x| format!("(?P<{}>{})|", x.0, x.1)));
-                Regex::new(&re_str[0..re_str.len() - 1]).unwrap()
-            };
+struct FutureStr<'a> {
+    s: Chars<'a>,
+    cache: Option<char>,
+}
+impl<'a> Iterator for FutureStr<'a> {
+    type Item = char;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cache.is_some() {
+            let tmp = self.cache;
+            self.cache = None;
+            tmp
+        } else {
+            self.s.next()
         }
-        let caps = RE.captures_iter(code.as_str());
-        let mut tokens = Vec::new();
-        let mut last_pos = 0;
-        for cap in caps {
-            for re in RE_LIST.iter() {
-                let name = re.0;
-                if let Some(mat) = cap.name(name) {
-                    // 确保每一个Token都是首尾相连的，没有匹配不到的字符
-                    if mat.start() != last_pos {
-                        return Err(SyntaxError::UnsolvableChar { offset: last_pos });
-                    }
-                    last_pos = mat.end();
-                    tokens.push(solve_match_to_token(name, mat.as_str()))
-                }
+    }
+}
+impl<'a> FutureStr<'a> {
+    fn from_str(s: &'a str) -> Self {
+        Self {
+            s: s.chars(),
+            cache: None,
+        }
+    }
+    fn until(&mut self, c: char) {
+        while self.next() != Some(c) {}
+    }
+    fn peek(&mut self) -> Option<char> {
+        if let Some(c) = self.cache {
+            Some(c)
+        } else {
+            if let Some(c) = self.s.next() {
+                self.cache = Some(c);
+                Some(c)
+            } else {
+                None
             }
         }
-        if last_pos == code.len() {
-            Ok(tokens)
-        } else {
-            Err(SyntaxError::UnsolvableChar { offset: last_pos })
-        }
+    }
+    fn gen_error(&self, reason: &'static str) -> SyntaxError {
+        SyntaxError::new(0, reason)
     }
 }
-// 将单个字符串解析为`Token`
-fn solve_match_to_token(name: &str, str: &str) -> Token {
-    match name {
-        LITERAL_VALUES_STRING_NAME => {
-            let mut s = String::from(str);
-            s.pop();
-            s.remove(0);
-            Token::LiteralValues(LiteralValues::String(s))
+pub fn str_to_token(s: &str) -> Result<Vec<Token>, SyntaxError> {
+    let mut s = FutureStr::from_str(s);
+    let mut ans = Vec::new();
+
+    loop {
+        let c = {
+            match s.next() {
+                Some(c) => c,
+                None => break,
+            }
+        };
+        let token = match c {
+            '(' => Token::Operator(Operator::LeftPeren),
+            ')' => Token::Operator(Operator::RightPeren),
+            '[' => Token::Operator(Operator::LeftSqket),
+            ']' => Token::Operator(Operator::RightSqket),
+            '{' => Token::Operator(Operator::LeftCuket),
+            '}' => Token::Operator(Operator::RightCuket),
+
+            ';' => Token::End,
+            '.' => Token::Operator(Operator::Call),
+
+            '&' => Token::Operator(Operator::And),
+            '|' => Token::Operator(Operator::Or),
+
+            '+' => Token::Operator(Operator::Add),
+            '-' => Token::Operator(Operator::Minus),
+            '*' => Token::Operator(Operator::Times),
+            '/' => {
+                if s.peek() == Some('/') {
+                    s.next();
+                    s.until('\n');
+                    Token::Empty
+                } else {
+                    Token::Operator(Operator::Divide)
+                }
+            }
+
+            '!' => {
+                if s.peek() == Some('=') {
+                    s.next();
+                    Token::Operator(Operator::Nonequal)
+                } else {
+                    Token::Operator(Operator::Not)
+                }
+            }
+
+            '=' => {
+                if s.peek() == Some('=') {
+                    s.next();
+                    Token::Operator(Operator::Equal)
+                } else {
+                    Token::Operator(Operator::Assign)
+                }
+            }
+
+            '>' => {
+                if s.peek() == Some('=') {
+                    s.next();
+                    Token::Operator(Operator::NotSmaller)
+                } else {
+                    Token::Operator(Operator::Larger)
+                }
+            }
+            '<' => {
+                if s.peek() == Some('=') {
+                    s.next();
+                    Token::Operator(Operator::NotLarger)
+                } else {
+                    Token::Operator(Operator::Smaller)
+                }
+            }
+            ' ' => Token::Empty,
+            '\r' => Token::Empty,
+            '\t' => Token::Empty,
+            '\n' => Token::Empty,
+            '"' => {
+                let mut str = String::new();
+                loop {
+                    if let Some(c) = s.next() {
+                        match c {
+                            '\n' => {
+                                return Err(s.gen_error("broken string"));
+                            }
+                            '"' => {
+                                break Token::LiteralValue(LiteralValue::String(str));
+                            }
+                            c => str.push(c),
+                        }
+                    } else {
+                        return Err(s.gen_error("broken string"));
+                    }
+                }
+            }
+            c if c.is_digit(10) => {
+                let mut str = String::new();
+                str.push(c);
+                let mut doted = false;
+                loop {
+                    match s.peek() {
+                        Some(c) if c.is_digit(10) => {
+                            str.push(c);
+                            s.next();
+                        }
+                        Some('.') => {
+                            if !doted {
+                                doted = true;
+                                str.push('.');
+                                s.next();
+                            } else {
+                                return Err(s.gen_error("unknow number"));
+                            }
+                        }
+                        _ => {
+                            if str.ends_with('.') {
+                                return Err(s.gen_error("unknow number"));
+                            }
+                            break Token::LiteralValue(LiteralValue::Number(str.parse().unwrap()));
+                        }
+                    }
+                }
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                let mut str = String::new();
+                str.push(c);
+                loop {
+                    match s.peek() {
+                        Some(c) if c.is_alphabetic() || c.is_digit(10) || c == '_' => {
+                            str.push(c);
+                            s.next().unwrap();
+                        }
+                        _ => {
+                            break match str.as_str() {
+                                "let" => Token::Keyword(Keyword::Let),
+                                "if" => Token::Keyword(Keyword::If),
+                                "else" => Token::Keyword(Keyword::Else),
+                                "true" => Token::Keyword(Keyword::True),
+                                "false" => Token::Keyword(Keyword::False),
+                                "for" => Token::Keyword(Keyword::For),
+                                "while" => Token::Keyword(Keyword::While),
+                                "null" => Token::Keyword(Keyword::Null),
+                                "func" => Token::Keyword(Keyword::Func),
+                                "return" => Token::Keyword(Keyword::Return),
+                                "this" => Token::Keyword(Keyword::This),
+                                "super" => Token::Keyword(Keyword::Super),
+                                _ => Token::Id(str),
+                            }
+                        }
+                    }
+                }
+            }
+
+            _ => return Err(s.gen_error("unknow char")),
+        };
+        if token != Token::Empty {
+            ans.push(token);
         }
-        LITERAL_VALUES_NUMBER_NAME => {
-            Token::LiteralValues(LiteralValues::Number(str.parse::<f64>().unwrap()))
-        }
-        KEYWORDS_NAME => Token::Keywords(solve_keywords_match(str)),
-        ID_NAME => Token::Id(String::from(str)),
-        END_NAME => Token::End,
-        EMPTY_NAME => Token::Empty,
-        COMMON_OPS_NAME => Token::Ops(solve_common_ops_match(str)),
-        ASSIGN_OPS_NAME => Token::Ops(Ops::Assign),
-        _ => panic!("Cant find token type {}", name),
     }
-}
-// 解析常见操作符的Token
-fn solve_common_ops_match(str: &str) -> Ops {
-    match str {
-        "+" => Ops::Add,
-        "-" => Ops::Minus,
-        "==" => Ops::Equal,
-        "!=" => Ops::Nonequal,
-        _ => panic!("Cant find common op {}", str),
-    }
-}
-// 解析关键字的Token
-fn solve_keywords_match(str: &str) -> Keywords {
-    match str {
-        "let" => Keywords::Declare,
-        _ => panic!("Cant find keyword {}", str),
-    }
+
+    Ok(ans)
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     #[test]
-    fn tokenize_normally() {
-        let code = String::from("let a =\"你是一个一个1919810\";let b = 114.514; a==b;");
-        let tokens = Token::from(&code).unwrap();
-        let ans = vec![
-            Token::Keywords(Keywords::Declare),
-            Token::Empty,
-            Token::Id(String::from("a")),
-            Token::Empty,
-            Token::Ops(Ops::Assign),
-            Token::LiteralValues(LiteralValues::String(String::from("你是一个一个1919810"))),
-            Token::End,
-            Token::Keywords(Keywords::Declare),
-            Token::Empty,
-            Token::Id(String::from("b")),
-            Token::Empty,
-            Token::Ops(Ops::Assign),
-            Token::Empty,
-            Token::LiteralValues(LiteralValues::Number(114.514)),
-            Token::End,
-            Token::Empty,
-            Token::Id(String::from("a")),
-            Token::Ops(Ops::Equal),
-            Token::Id(String::from("b")),
-            Token::End,
-        ];
-        assert_eq!(tokens.len(), tokens.len());
-        for i in 0..tokens.len() {
-            assert_eq!(tokens[i], ans[i]);
-        }
+    fn scan_test() {
+        assert_eq!(
+            str_to_token(
+                "let _你好a = \"hello啊\"; let letb = a+123.01; while(true) a = b+a; return a*b;"
+            )
+            .unwrap(),
+            vec![
+                Token::Keyword(Keyword::Let),
+                Token::Id(String::from("_你好a")),
+                Token::Operator(Operator::Assign),
+                Token::LiteralValue(LiteralValue::String(String::from("hello啊"))),
+                Token::End,
+                Token::Keyword(Keyword::Let),
+                Token::Id(String::from("letb")),
+                Token::Operator(Operator::Assign),
+                Token::Id(String::from("a")),
+                Token::Operator(Operator::Add),
+                Token::LiteralValue(LiteralValue::Number(123.01)),
+                Token::End,
+                Token::Keyword(Keyword::While),
+                Token::Operator(Operator::LeftPeren),
+                Token::Keyword(Keyword::True),
+                Token::Operator(Operator::RightPeren),
+                Token::Id(String::from("a")),
+                Token::Operator(Operator::Assign),
+                Token::Id(String::from("b")),
+                Token::Operator(Operator::Add),
+                Token::Id(String::from("a")),
+                Token::End,
+                Token::Keyword(Keyword::Return),
+                Token::Id(String::from("a")),
+                Token::Operator(Operator::Times),
+                Token::Id(String::from("b")),
+                Token::End,
+            ]
+        );
     }
 }
